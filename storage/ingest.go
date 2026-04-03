@@ -110,11 +110,13 @@ func (i *Ingestor) Insert(ctx context.Context, dataset, partition string, batch 
 			for _, chunk := range cc.Chunks {
 				data, err := format.SerializeColumn(chunk.Array)
 				if err != nil {
+					chunk.Array.Release()
 					return err
 				}
 
 				key := EncodeKey(dataset, partition, cc.Column, chunkID+chunk.ChunkID)
 				if err := dataBucket.Put(key, data); err != nil {
+					chunk.Array.Release()
 					return err
 				}
 
@@ -144,6 +146,7 @@ func (i *Ingestor) Insert(ctx context.Context, dataset, partition string, batch 
 					metaBucket.Put(metaKey, metaData)
 				}
 
+				chunk.Array.Release()
 				chunkID++
 			}
 		}
@@ -302,39 +305,47 @@ func rowsToRecordBatch(rows []map[string]interface{}, schema *arrow.Schema, mem 
 		}
 
 		columns[colIdx] = builder.NewArray()
+		returnBuilder(builder)
 	}
 
 	return array.NewRecordBatch(schema, columns, int64(len(rows))), nil
 }
 
 func newBuilder(mem memory.Allocator, dt arrow.DataType) array.Builder {
+	if mem == nil {
+		mem = memory.DefaultAllocator
+	}
+
 	switch dt.ID() {
 	case arrow.INT64:
-		return array.NewInt64Builder(mem)
+		return defaultBuilderPool.GetInt64(mem)
 	case arrow.INT32:
-		return array.NewInt32Builder(mem)
-	case arrow.INT16:
-		return array.NewInt16Builder(mem)
-	case arrow.INT8:
-		return array.NewInt8Builder(mem)
-	case arrow.UINT64:
-		return array.NewUint64Builder(mem)
-	case arrow.UINT32:
-		return array.NewUint32Builder(mem)
-	case arrow.UINT16:
-		return array.NewUint16Builder(mem)
-	case arrow.UINT8:
-		return array.NewUint8Builder(mem)
+		return defaultBuilderPool.GetInt32(mem)
 	case arrow.FLOAT64:
-		return array.NewFloat64Builder(mem)
-	case arrow.FLOAT32:
-		return array.NewFloat32Builder(mem)
+		return defaultBuilderPool.GetFloat64(mem)
 	case arrow.STRING:
-		return array.NewStringBuilder(mem)
-	case arrow.BOOL:
-		return array.NewBooleanBuilder(mem)
+		return defaultBuilderPool.GetString(mem)
 	default:
 		return array.NewBuilder(mem, dt)
+	}
+}
+
+func returnBuilder(b array.Builder) {
+	if b == nil {
+		return
+	}
+
+	switch b := b.(type) {
+	case *array.Int64Builder:
+		defaultBuilderPool.ReturnInt64(b)
+	case *array.Int32Builder:
+		defaultBuilderPool.ReturnInt32(b)
+	case *array.Float64Builder:
+		defaultBuilderPool.ReturnFloat64(b)
+	case *array.StringBuilder:
+		defaultBuilderPool.ReturnString(b)
+	default:
+		b.Release()
 	}
 }
 

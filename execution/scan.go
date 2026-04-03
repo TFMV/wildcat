@@ -3,6 +3,7 @@ package execution
 import (
 	"bytes"
 	"context"
+	"sort"
 
 	"github.com/TFMV/wildcat/format"
 	"github.com/TFMV/wildcat/storage"
@@ -106,13 +107,28 @@ func (s *ScanOperator) collectColumnData(ctx context.Context) (map[string][]form
 		return nil, err
 	}
 
-	var predicates []storage.Predicate
+	var candidateChunkIDs []uint32
 	if s.predicate != nil {
-		predicates = []storage.Predicate{{
+		predicate := storage.Predicate{
 			Column: s.predicate.Column,
-			Type:   storage.PredicateType(s.predicate.Type),
+			Type:   s.predicate.Type,
 			Value:  s.predicate.Value,
-		}}
+		}
+
+		ids := make([]uint32, 0)
+		err := s.storage.ScanColumnChunksWithPredicates(ctx, s.dataset, s.partition, predicate.Column, []storage.Predicate{predicate}, func(chunkID uint32, _ []byte) error {
+			ids = append(ids, chunkID)
+			return nil
+		})
+		if err != nil {
+			return nil, err
+		}
+
+		if len(ids) == 0 {
+			return colData, nil
+		}
+
+		candidateChunkIDs = ids
 	}
 
 	for _, col := range allColumns {
@@ -122,32 +138,37 @@ func (s *ScanOperator) collectColumnData(ctx context.Context) (map[string][]form
 
 		var chunks []format.Chunk
 
-		colPredicates := predicates
-		for _, p := range colPredicates {
-			if p.Column != col {
-				colPredicates = nil
-				break
-			}
+		colPredicates := []storage.Predicate{}
+		if s.predicate != nil && s.predicate.Column == col {
+			colPredicates = []storage.Predicate{{
+				Column: s.predicate.Column,
+				Type:   storage.PredicateType(s.predicate.Type),
+				Value:  s.predicate.Value,
+			}}
 		}
 
-		var scanFn func(chunkID uint32, data []byte) error
-		if len(colPredicates) > 0 {
-			colPred := colPredicates[0]
-			execPred := Predicate{
-				Column: colPred.Column,
-				Type:   PredicateType(colPred.Type),
-				Value:  colPred.Value,
+		baseScanFn := func(chunkID uint32, data []byte) error {
+			if len(candidateChunkIDs) > 0 && !containsChunkID(candidateChunkIDs, chunkID) {
+				return nil
 			}
-			scanFn = func(chunkID uint32, data []byte) error {
-				arr, err := format.DeserializeColumn(data)
+
+			arr, err := format.DeserializeColumn(data)
+			if err != nil {
+				return err
+			}
+
+			if len(colPredicates) > 0 {
+				execPred := Predicate{
+					Column: colPredicates[0].Column,
+					Type:   PredicateType(colPredicates[0].Type),
+					Value:  colPredicates[0].Value,
+				}
+				filtered, err := ApplyPredicate(arr, execPred, s.mem)
+				arr.Release()
 				if err != nil {
 					return err
 				}
 
-				filtered, err := ApplyPredicate(arr, execPred, s.mem)
-				if err != nil {
-					return err
-				}
 				if filtered != nil {
 					chunks = append(chunks, format.Chunk{
 						ColumnName: col,
@@ -158,24 +179,17 @@ func (s *ScanOperator) collectColumnData(ctx context.Context) (map[string][]form
 				}
 				return nil
 			}
-		} else {
-			scanFn = func(chunkID uint32, data []byte) error {
-				arr, err := format.DeserializeColumn(data)
-				if err != nil {
-					return err
-				}
 
-				chunks = append(chunks, format.Chunk{
-					ColumnName: col,
-					Array:      arr,
-					ChunkID:    chunkID,
-					NumRows:    int64(arr.Len()),
-				})
-				return nil
-			}
+			chunks = append(chunks, format.Chunk{
+				ColumnName: col,
+				Array:      arr,
+				ChunkID:    chunkID,
+				NumRows:    int64(arr.Len()),
+			})
+			return nil
 		}
 
-		err := s.storage.ScanColumnChunksWithPredicates(ctx, s.dataset, s.partition, col, colPredicates, scanFn)
+		err := s.storage.ScanColumnChunks(ctx, s.dataset, s.partition, col, baseScanFn)
 		if err != nil {
 			return nil, err
 		}
@@ -294,6 +308,13 @@ func containsString(slice []string, s string) bool {
 		}
 	}
 	return false
+}
+
+func containsChunkID(ids []uint32, target uint32) bool {
+	idx := sort.Search(len(ids), func(i int) bool {
+		return ids[i] >= target
+	})
+	return idx < len(ids) && ids[idx] == target
 }
 
 type ScanResult struct {

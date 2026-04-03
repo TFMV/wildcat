@@ -217,9 +217,23 @@ func ComputeArrayStats(arr arrow.Array, dataset, partition, column string, chunk
 
 	switch arr := arr.(type) {
 	case *array.Int64:
-		if arr.Len() > 0 {
-			min := arr.Value(0)
-			max := arr.Value(arr.Len() - 1)
+		var min int64
+		var max int64
+		found := false
+		for i := 0; i < arr.Len(); i++ {
+			if !arr.IsValid(i) {
+				continue
+			}
+			v := arr.Value(i)
+			if !found || v < min {
+				min = v
+			}
+			if !found || v > max {
+				max = v
+			}
+			found = true
+		}
+		if found {
 			stats.MinInt64 = &min
 			stats.MaxInt64 = &max
 			minBytes := make([]byte, 8)
@@ -231,27 +245,79 @@ func ComputeArrayStats(arr arrow.Array, dataset, partition, column string, chunk
 		}
 
 	case *array.Int32:
-		if arr.Len() > 0 {
-			min := arr.Value(0)
-			max := arr.Value(arr.Len() - 1)
-			minVal := int64(min)
-			maxVal := int64(max)
-			stats.MinInt64 = &minVal
-			stats.MaxInt64 = &maxVal
+		var min int64
+		var max int64
+		found := false
+		for i := 0; i < arr.Len(); i++ {
+			if !arr.IsValid(i) {
+				continue
+			}
+			v := int64(arr.Value(i))
+			if !found || v < min {
+				min = v
+			}
+			if !found || v > max {
+				max = v
+			}
+			found = true
+		}
+		if found {
+			stats.MinInt64 = &min
+			stats.MaxInt64 = &max
+			minBytes := make([]byte, 8)
+			binary.BigEndian.PutUint64(minBytes, uint64(min))
+			stats.MinValue = minBytes
+			maxBytes := make([]byte, 8)
+			binary.BigEndian.PutUint64(maxBytes, uint64(max))
+			stats.MaxValue = maxBytes
 		}
 
 	case *array.Float64:
-		if arr.Len() > 0 {
-			min := arr.Value(0)
-			max := arr.Value(arr.Len() - 1)
+		var min float64
+		var max float64
+		found := false
+		for i := 0; i < arr.Len(); i++ {
+			if !arr.IsValid(i) {
+				continue
+			}
+			v := arr.Value(i)
+			if !found || v < min {
+				min = v
+			}
+			if !found || v > max {
+				max = v
+			}
+			found = true
+		}
+		if found {
 			stats.MinFloat64 = &min
 			stats.MaxFloat64 = &max
+			minBytes := make([]byte, 8)
+			encodeFloat64(minBytes, min)
+			stats.MinValue = minBytes
+			maxBytes := make([]byte, 8)
+			encodeFloat64(maxBytes, max)
+			stats.MaxValue = maxBytes
 		}
 
 	case *array.String:
-		if arr.Len() > 0 {
-			min := arr.Value(0)
-			max := arr.Value(arr.Len() - 1)
+		var min string
+		var max string
+		found := false
+		for i := 0; i < arr.Len(); i++ {
+			if !arr.IsValid(i) {
+				continue
+			}
+			v := arr.Value(i)
+			if !found || v < min {
+				min = v
+			}
+			if !found || v > max {
+				max = v
+			}
+			found = true
+		}
+		if found {
 			stats.MinString = &min
 			stats.MaxString = &max
 			stats.MinValue = []byte(min)
