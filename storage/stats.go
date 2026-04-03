@@ -6,6 +6,7 @@ import (
 	"encoding/binary"
 	"fmt"
 	"io"
+	"strconv"
 
 	"github.com/apache/arrow-go/v18/arrow"
 	"github.com/apache/arrow-go/v18/arrow/array"
@@ -191,14 +192,33 @@ func (d *DB) ScanChunkStats(ctx context.Context, dataset, partition, column stri
 	})
 }
 
+func chunkStatsKeyTo(buf *bytes.Buffer, dataset, partition, column string, chunkID uint32) {
+	buf.WriteString(dataset)
+	buf.WriteByte('/')
+	buf.WriteString(partition)
+	buf.WriteByte('/')
+	buf.WriteString(column)
+	buf.WriteString("/stats/")
+	buf.WriteString(strconv.FormatUint(uint64(chunkID), 10))
+}
+
 func chunkStatsKey(dataset, partition, column string, chunkID uint32) []byte {
-	key := fmt.Sprintf("%s/%s/%s/stats/%d", dataset, partition, column, chunkID)
-	return []byte(key)
+	var buf bytes.Buffer
+	buf.Grow(len(dataset) + len(partition) + len(column) + len("/stats/") + 10)
+	chunkStatsKeyTo(&buf, dataset, partition, column, chunkID)
+	return append([]byte(nil), buf.Bytes()...)
 }
 
 func chunkStatsPrefix(dataset, partition, column string) []byte {
-	prefix := fmt.Sprintf("%s/%s/%s/stats/", dataset, partition, column)
-	return []byte(prefix)
+	var buf bytes.Buffer
+	buf.Grow(len(dataset) + len(partition) + len(column) + len("/stats/"))
+	buf.WriteString(dataset)
+	buf.WriteByte('/')
+	buf.WriteString(partition)
+	buf.WriteByte('/')
+	buf.WriteString(column)
+	buf.WriteString("/stats/")
+	return append([]byte(nil), buf.Bytes()...)
 }
 
 func ComputeArrayStats(arr arrow.Array, dataset, partition, column string, chunkID uint32) *ChunkStats {
@@ -455,8 +475,20 @@ func (d *DB) ReadColumnMetadata(ctx context.Context, dataset, partition, column 
 	return meta, err
 }
 
+func columnMetaKeyTo(buf *bytes.Buffer, dataset, partition, column string) {
+	buf.WriteString(dataset)
+	buf.WriteByte('/')
+	buf.WriteString(partition)
+	buf.WriteByte('/')
+	buf.WriteString(column)
+	buf.WriteString("/meta")
+}
+
 func columnMetaKey(dataset, partition, column string) []byte {
-	return []byte(fmt.Sprintf("%s/%s/%s/meta", dataset, partition, column))
+	var buf bytes.Buffer
+	buf.Grow(len(dataset) + len(partition) + len(column) + len("/meta") + 2)
+	columnMetaKeyTo(&buf, dataset, partition, column)
+	return append([]byte(nil), buf.Bytes()...)
 }
 
 type StatsWriter struct {

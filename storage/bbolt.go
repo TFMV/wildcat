@@ -263,34 +263,40 @@ func contains(slice []string, s string) bool {
 	return false
 }
 
+func EncodeKeyTo(buf *bytes.Buffer, dataset, partition, column string, chunkID uint32) {
+	buf.WriteString(dataset)
+	buf.WriteByte(0)
+	buf.WriteString(partition)
+	buf.WriteByte(0)
+	buf.WriteString(column)
+	buf.WriteByte(0)
+
+	var chunkBytes [ChunkIDSize]byte
+	binary.BigEndian.PutUint32(chunkBytes[:], chunkID)
+	buf.Write(chunkBytes[:])
+}
+
 func EncodeKey(dataset, partition, column string, chunkID uint32) []byte {
-	// Format: dataset\0partition\0column\0[big-endian chunkID]
-	// Using null byte (0x00) as separator for lexicographic ordering
+	var buf bytes.Buffer
+	buf.Grow(len(dataset) + 1 + len(partition) + 1 + len(column) + 1 + ChunkIDSize)
+	EncodeKeyTo(&buf, dataset, partition, column, chunkID)
+	return append([]byte(nil), buf.Bytes()...)
+}
 
-	key := make([]byte, 0, len(dataset)+1+len(partition)+1+len(column)+1+ChunkIDSize)
-	key = append(key, []byte(dataset)...)
-	key = append(key, 0)
-	key = append(key, []byte(partition)...)
-	key = append(key, 0)
-	key = append(key, []byte(column)...)
-	key = append(key, 0)
-
-	chunkBytes := make([]byte, ChunkIDSize)
-	binary.BigEndian.PutUint32(chunkBytes, chunkID)
-	key = append(key, chunkBytes...)
-
-	return key
+func EncodeKeyPrefixTo(buf *bytes.Buffer, dataset, partition, column string) {
+	buf.WriteString(dataset)
+	buf.WriteByte(0)
+	buf.WriteString(partition)
+	buf.WriteByte(0)
+	buf.WriteString(column)
+	buf.WriteByte(0)
 }
 
 func EncodeKeyPrefix(dataset, partition, column string) []byte {
-	prefix := make([]byte, 0, len(dataset)+1+len(partition)+1+len(column)+1)
-	prefix = append(prefix, []byte(dataset)...)
-	prefix = append(prefix, 0)
-	prefix = append(prefix, []byte(partition)...)
-	prefix = append(prefix, 0)
-	prefix = append(prefix, []byte(column)...)
-	prefix = append(prefix, 0)
-	return prefix
+	var buf bytes.Buffer
+	buf.Grow(len(dataset) + 1 + len(partition) + 1 + len(column) + 1)
+	EncodeKeyPrefixTo(&buf, dataset, partition, column)
+	return append([]byte(nil), buf.Bytes()...)
 }
 
 func ExtractChunkID(key []byte) (uint32, error) {

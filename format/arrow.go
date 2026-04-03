@@ -83,32 +83,43 @@ func SplitRecordBatch(batch arrow.RecordBatch, chunkSize int) []ColumnChunks {
 	return result
 }
 
+func SerializeColumnTo(w io.Writer, arr arrow.Array) error {
+	if arr == nil {
+		return nil
+	}
+
+	fields := []arrow.Field{{Name: "col", Type: arr.DataType()}}
+	schema := arrow.NewSchema(fields, nil)
+
+	ipcWriter := ipc.NewWriter(w, ipc.WithSchema(schema))
+	defer ipcWriter.Close()
+
+	batch := array.NewRecordBatch(schema, []arrow.Array{arr}, int64(arr.Len()))
+	defer batch.Release()
+
+	if err := ipcWriter.Write(batch); err != nil {
+		return err
+	}
+
+	if err := ipcWriter.Close(); err != nil {
+		return err
+	}
+
+	return nil
+}
+
 func SerializeColumn(arr arrow.Array) ([]byte, error) {
 	if arr == nil {
 		return nil, nil
 	}
 
-	fields := []arrow.Field{
-		{Name: "col", Type: arr.DataType()},
-	}
-	schema := arrow.NewSchema(fields, nil)
-
 	var buf bytes.Buffer
-	w := ipc.NewWriter(&buf, ipc.WithSchema(schema))
-	defer w.Close()
-
-	batch := array.NewRecordBatch(schema, []arrow.Array{arr}, int64(arr.Len()))
-	defer batch.Release()
-
-	if err := w.Write(batch); err != nil {
+	buf.Grow(65536)
+	if err := SerializeColumnTo(&buf, arr); err != nil {
 		return nil, err
 	}
 
-	if err := w.Close(); err != nil {
-		return nil, err
-	}
-
-	return buf.Bytes(), nil
+	return append([]byte(nil), buf.Bytes()...), nil
 }
 
 func DeserializeColumn(data []byte) (arrow.Array, error) {

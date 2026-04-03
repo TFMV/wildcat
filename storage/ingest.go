@@ -1,8 +1,10 @@
 package storage
 
 import (
+	"bytes"
 	"context"
 	"encoding/binary"
+	"sync"
 	"sync/atomic"
 
 	"github.com/apache/arrow-go/v18/arrow"
@@ -18,6 +20,15 @@ const (
 
 	MaxConcurrentWrites = 4
 )
+
+// bufferPool provides scratch buffers to eliminate serialization allocations.
+// Note: You will need to update format.SerializeColumn, EncodeKey, etc.,
+// to accept an io.Writer or *bytes.Buffer to fully utilize this.
+var bufferPool = sync.Pool{
+	New: func() interface{} {
+		return bytes.NewBuffer(make([]byte, 0, 65536))
+	},
+}
 
 type Ingestor struct {
 	engine       *Engine
@@ -72,11 +83,14 @@ func (i *Ingestor) Insert(ctx context.Context, dataset, partition string, batch 
 
 	columnChunks := format.SplitRecordBatch(batch, i.chunkSize)
 
+	// 1. Precompute static keys outside the transactions to avoid repeated concatenations
+	metaKeyStr := dataset + "/" + partition + "/next_chunk_id"
+	metaKey := []byte(metaKeyStr)
+
 	var nextChunkID uint32
 	if err := i.engine.db.View(func(tx *bbolt.Tx) error {
 		bucket := tx.Bucket([]byte(BucketMeta))
 		if bucket != nil {
-			metaKey := []byte(dataset + "/" + partition + "/next_chunk_id")
 			if data := bucket.Get(metaKey); len(data) >= 4 {
 				nextChunkID = binary.BigEndian.Uint32(data)
 			}
@@ -106,31 +120,44 @@ func (i *Ingestor) Insert(ctx context.Context, dataset, partition string, batch 
 
 		chunkID := nextChunkID
 
+		// 2. Allocate the struct once outside the loop and mutate it
+		var colMeta ColumnMetadata
+
+		dataBuf := bufferPool.Get().(*bytes.Buffer)
+		keyBuf := bufferPool.Get().(*bytes.Buffer)
+		defer bufferPool.Put(dataBuf)
+		defer bufferPool.Put(keyBuf)
+		dataBuf.Reset()
+		keyBuf.Reset()
+
 		for _, cc := range columnChunks {
 			for _, chunk := range cc.Chunks {
-				data, err := format.SerializeColumn(chunk.Array)
-				if err != nil {
+				dataBuf.Reset()
+				if err := format.SerializeColumnTo(dataBuf, chunk.Array); err != nil {
 					chunk.Array.Release()
 					return err
 				}
 
-				key := EncodeKey(dataset, partition, cc.Column, chunkID+chunk.ChunkID)
-				if err := dataBucket.Put(key, data); err != nil {
+				keyBuf.Reset()
+				EncodeKeyTo(keyBuf, dataset, partition, cc.Column, chunkID+chunk.ChunkID)
+				if err := dataBucket.Put(keyBuf.Bytes(), dataBuf.Bytes()); err != nil {
 					chunk.Array.Release()
 					return err
 				}
 
-				atomic.AddInt64(&i.stats.BytesWritten, int64(len(data)))
+				atomic.AddInt64(&i.stats.BytesWritten, int64(dataBuf.Len()))
 
 				if i.computeStats {
 					stats := ComputeArrayStats(chunk.Array, dataset, partition, cc.Column, chunkID+chunk.ChunkID)
 					if stats != nil {
 						statsData, _ := stats.Encode()
-						statsKey := chunkStatsKey(dataset, partition, cc.Column, chunkID+chunk.ChunkID)
-						metaBucket.Put(statsKey, statsData)
+						keyBuf.Reset()
+						chunkStatsKeyTo(keyBuf, dataset, partition, cc.Column, chunkID+chunk.ChunkID)
+						metaBucket.Put(keyBuf.Bytes(), statsData)
 					}
 
-					colMeta := &ColumnMetadata{
+					// 3. Reuse the struct instead of allocating a new pointer on the heap
+					colMeta = ColumnMetadata{
 						Dataset:    dataset,
 						Partition:  partition,
 						Column:     cc.Column,
@@ -141,9 +168,11 @@ func (i *Ingestor) Insert(ctx context.Context, dataset, partition string, batch 
 						MinValue:   stats.MinValue,
 						MaxValue:   stats.MaxValue,
 					}
-					metaKey := columnMetaKey(dataset, partition, cc.Column)
-					metaData, _ := colMeta.Encode()
-					metaBucket.Put(metaKey, metaData)
+
+					keyBuf.Reset()
+					columnMetaKeyTo(keyBuf, dataset, partition, cc.Column)
+					metaData, _ := colMeta.Encode() // Ensure Encode() uses value receiver
+					metaBucket.Put(keyBuf.Bytes(), metaData)
 				}
 
 				chunk.Array.Release()
@@ -151,10 +180,10 @@ func (i *Ingestor) Insert(ctx context.Context, dataset, partition string, batch 
 			}
 		}
 
-		metaKey := []byte(dataset + "/" + partition + "/next_chunk_id")
-		nextID := make([]byte, 4)
-		binary.BigEndian.PutUint32(nextID, nextChunkID+uint32(totalChunks))
-		if err := metaBucket.Put(metaKey, nextID); err != nil {
+		// 4. Use a stack-allocated array instead of make([]byte, 4)
+		var nextIDBuf [4]byte
+		binary.BigEndian.PutUint32(nextIDBuf[:], nextChunkID+uint32(totalChunks))
+		if err := metaBucket.Put(metaKey, nextIDBuf[:]); err != nil {
 			return err
 		}
 
@@ -273,6 +302,8 @@ func NewChunkedIngestor(engine *Engine, chunkSize int, mem memory.Allocator) *Ch
 	}
 }
 
+// NOTE: This row-by-row ingestion is fundamentally allocation-heavy due to `map[string]interface{}`.
+// Use this only for testing/convenience. In production, ingest directly into Arrow RecordBatches.
 func (c *ChunkedIngestor) InsertFromRows(ctx context.Context, dataset, partition string, rows []map[string]interface{}, schema *arrow.Schema) (*IngestResult, error) {
 	if len(rows) == 0 {
 		return &IngestResult{}, nil
