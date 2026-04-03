@@ -54,7 +54,7 @@ func SplitRecordBatch(batch arrow.RecordBatch, chunkSize int) []ColumnChunks {
 
 		cc := ColumnChunks{
 			Column: colName,
-			Chunks: make([]Chunk, 0),
+			Chunks: make([]Chunk, 0, (numRows+chunkSize-1)/chunkSize),
 		}
 
 		var chunkID uint32
@@ -64,8 +64,7 @@ func SplitRecordBatch(batch arrow.RecordBatch, chunkSize int) []ColumnChunks {
 				end = numRows
 			}
 
-			mem := memory.DefaultAllocator
-			chunkArr := sliceArrayToBuilder(col, start, end, mem)
+			chunkArr := array.NewSlice(col, int64(start), int64(end))
 
 			cc.Chunks = append(cc.Chunks, Chunk{
 				ColumnName: colName,
@@ -82,174 +81,6 @@ func SplitRecordBatch(batch arrow.RecordBatch, chunkSize int) []ColumnChunks {
 	}
 
 	return result
-}
-
-func sliceArrayToBuilder(arr arrow.Array, start, end int, mem memory.Allocator) arrow.Array {
-	switch arr := arr.(type) {
-	case *array.Int64:
-		b := array.NewInt64Builder(mem)
-		b.Reserve(end - start)
-		for i := start; i < end; i++ {
-			if arr.IsValid(i) {
-				b.Append(arr.Value(i))
-			} else {
-				b.AppendNull()
-			}
-		}
-		return b.NewArray()
-	case *array.Int32:
-		b := array.NewInt32Builder(mem)
-		b.Reserve(end - start)
-		for i := start; i < end; i++ {
-			if arr.IsValid(i) {
-				b.Append(arr.Value(i))
-			} else {
-				b.AppendNull()
-			}
-		}
-		return b.NewArray()
-	case *array.Int16:
-		b := array.NewInt16Builder(mem)
-		b.Reserve(end - start)
-		for i := start; i < end; i++ {
-			if arr.IsValid(i) {
-				b.Append(arr.Value(i))
-			} else {
-				b.AppendNull()
-			}
-		}
-		return b.NewArray()
-	case *array.Int8:
-		b := array.NewInt8Builder(mem)
-		b.Reserve(end - start)
-		for i := start; i < end; i++ {
-			if arr.IsValid(i) {
-				b.Append(arr.Value(i))
-			} else {
-				b.AppendNull()
-			}
-		}
-		return b.NewArray()
-	case *array.Uint64:
-		b := array.NewUint64Builder(mem)
-		b.Reserve(end - start)
-		for i := start; i < end; i++ {
-			if arr.IsValid(i) {
-				b.Append(arr.Value(i))
-			} else {
-				b.AppendNull()
-			}
-		}
-		return b.NewArray()
-	case *array.Uint32:
-		b := array.NewUint32Builder(mem)
-		b.Reserve(end - start)
-		for i := start; i < end; i++ {
-			if arr.IsValid(i) {
-				b.Append(arr.Value(i))
-			} else {
-				b.AppendNull()
-			}
-		}
-		return b.NewArray()
-	case *array.Uint16:
-		b := array.NewUint16Builder(mem)
-		b.Reserve(end - start)
-		for i := start; i < end; i++ {
-			if arr.IsValid(i) {
-				b.Append(arr.Value(i))
-			} else {
-				b.AppendNull()
-			}
-		}
-		return b.NewArray()
-	case *array.Uint8:
-		b := array.NewUint8Builder(mem)
-		b.Reserve(end - start)
-		for i := start; i < end; i++ {
-			if arr.IsValid(i) {
-				b.Append(arr.Value(i))
-			} else {
-				b.AppendNull()
-			}
-		}
-		return b.NewArray()
-	case *array.Float64:
-		b := array.NewFloat64Builder(mem)
-		b.Reserve(end - start)
-		for i := start; i < end; i++ {
-			if arr.IsValid(i) {
-				b.Append(arr.Value(i))
-			} else {
-				b.AppendNull()
-			}
-		}
-		return b.NewArray()
-	case *array.Float32:
-		b := array.NewFloat32Builder(mem)
-		b.Reserve(end - start)
-		for i := start; i < end; i++ {
-			if arr.IsValid(i) {
-				b.Append(arr.Value(i))
-			} else {
-				b.AppendNull()
-			}
-		}
-		return b.NewArray()
-	case *array.String:
-		b := array.NewStringBuilder(mem)
-		b.Reserve(end - start)
-		for i := start; i < end; i++ {
-			if arr.IsValid(i) {
-				b.Append(arr.Value(i))
-			} else {
-				b.AppendNull()
-			}
-		}
-		return b.NewArray()
-	case *array.Boolean:
-		b := array.NewBooleanBuilder(mem)
-		b.Reserve(end - start)
-		for i := start; i < end; i++ {
-			if arr.IsValid(i) {
-				b.Append(arr.Value(i))
-			} else {
-				b.AppendNull()
-			}
-		}
-		return b.NewArray()
-	default:
-		return sliceGenericArray(arr, start, end, mem)
-	}
-}
-
-func sliceGenericArray(arr arrow.Array, start, end int, mem memory.Allocator) arrow.Array {
-	switch v := arr.(type) {
-	case *array.Binary:
-		b := array.NewBinaryBuilder(mem, arrow.BinaryTypes.Binary)
-		b.Reserve(end - start)
-		for i := start; i < end; i++ {
-			if v.IsValid(i) {
-				b.Append(v.Value(i))
-			} else {
-				b.AppendNull()
-			}
-		}
-		return b.NewArray()
-	case *array.LargeString:
-		b := array.NewLargeStringBuilder(mem)
-		b.Reserve(end - start)
-		for i := start; i < end; i++ {
-			if v.IsValid(i) {
-				b.Append(v.Value(i))
-			} else {
-				b.AppendNull()
-			}
-		}
-		return b.NewArray()
-	default:
-		return nil
-	}
 }
 
 func SerializeColumn(arr arrow.Array) ([]byte, error) {

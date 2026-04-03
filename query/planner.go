@@ -39,19 +39,16 @@ func (p *Planner) createLogicalPlan(ast *AST) LogicalPlan {
 		Partition: "default",
 		Columns:   collectColumns(ast.Columns),
 	}
-	plan = &scan
 
 	if ast.Where != nil {
-		filter := LogicalFilter{
-			Input: plan,
-			Predicate: execution.Predicate{
-				Column: ast.Where.Column,
-				Type:   ast.Where.Type,
-				Value:  ast.Where.Value,
-			},
+		scan.Predicate = execution.Predicate{
+			Column: ast.Where.Column,
+			Type:   ast.Where.Type,
+			Value:  ast.Where.Value,
 		}
-		plan = &filter
 	}
+
+	plan = &scan
 
 	if len(ast.GroupBy) > 0 || hasAggregation(ast.Columns) {
 		var aggs []AggregationSpec
@@ -325,7 +322,7 @@ func (a *PhysicalAggregate) Execute() (format.RecordBatch, error) {
 	}
 
 	if len(a.GroupBy) == 0 && len(a.AggSpecs) > 0 {
-		chunks := make([]format.Chunk, 0)
+		chunks := make([]format.Chunk, 0, int(inputResult.NumCols()))
 		for i := 0; i < int(inputResult.NumCols()); i++ {
 			chunks = append(chunks, format.Chunk{
 				ColumnName: inputResult.ColumnName(i),
@@ -334,24 +331,73 @@ func (a *PhysicalAggregate) Execute() (format.RecordBatch, error) {
 			})
 		}
 
-		values := make(map[string]interface{})
-		for _, spec := range a.AggSpecs {
-			result, _ := execution.ComputeAggregation(chunks, execution.AggregationSpec{
-				Column: spec.Column,
-				Type:   execution.AggregationType(spec.Type),
-			}, nil)
-
-			if result != nil {
-				values[spec.Column] = result.Values[spec.Column]
-			}
-		}
-
 		fields := make([]arrow.Field, len(a.AggSpecs))
 		columns := make([]arrow.Array, len(a.AggSpecs))
 
 		for i, spec := range a.AggSpecs {
-			fields[i] = arrow.Field{Name: spec.Column, Type: &arrow.Int64Type{}}
-			columns[i] = array.NewInt64Builder(memory.DefaultAllocator).NewArray()
+			aggResult, _ := execution.ComputeAggregation(chunks, execution.AggregationSpec{
+				Column: spec.Column,
+				Type:   execution.AggregationType(spec.Type),
+			}, nil)
+
+			var value interface{}
+			if aggResult != nil {
+				value = aggResult.Values[spec.Column]
+			}
+
+			switch string(spec.Type) {
+			case string(execution.AggCount):
+				fields[i] = arrow.Field{Name: spec.Column, Type: &arrow.Int64Type{}}
+				builder := array.NewInt64Builder(memory.DefaultAllocator)
+				if v, ok := value.(int64); ok {
+					builder.Append(v)
+				} else {
+					builder.Append(0)
+				}
+				columns[i] = builder.NewArray()
+			case string(execution.AggSum):
+				fields[i] = arrow.Field{Name: spec.Column, Type: &arrow.Float64Type{}}
+				builder := array.NewFloat64Builder(memory.DefaultAllocator)
+				if value != nil {
+					switch v := value.(type) {
+					case int64:
+						builder.Append(float64(v))
+					case float64:
+						builder.Append(v)
+					}
+				} else {
+					builder.Append(0)
+				}
+				columns[i] = builder.NewArray()
+			case string(execution.AggAvg):
+				fields[i] = arrow.Field{Name: spec.Column, Type: &arrow.Float64Type{}}
+				builder := array.NewFloat64Builder(memory.DefaultAllocator)
+				if v, ok := value.(float64); ok {
+					builder.Append(v)
+				} else {
+					builder.Append(0)
+				}
+				columns[i] = builder.NewArray()
+			case string(execution.AggMin), string(execution.AggMax):
+				fields[i] = arrow.Field{Name: spec.Column, Type: &arrow.Float64Type{}}
+				builder := array.NewFloat64Builder(memory.DefaultAllocator)
+				if value != nil {
+					switch v := value.(type) {
+					case int64:
+						builder.Append(float64(v))
+					case float64:
+						builder.Append(v)
+					default:
+						builder.Append(0)
+					}
+				} else {
+					builder.Append(0)
+				}
+				columns[i] = builder.NewArray()
+			default:
+				fields[i] = arrow.Field{Name: spec.Column, Type: &arrow.Float64Type{}}
+				columns[i] = array.NewFloat64Builder(memory.DefaultAllocator).NewArray()
+			}
 		}
 
 		a.result = format.NewRecordBatch(arrow.NewSchema(fields, nil), columns, 1)

@@ -1,15 +1,67 @@
 package execution
 
 import (
+	"context"
 	"fmt"
 
 	"github.com/apache/arrow-go/v18/arrow"
 	"github.com/apache/arrow-go/v18/arrow/array"
+	"github.com/apache/arrow-go/v18/arrow/compute"
 	"github.com/apache/arrow-go/v18/arrow/memory"
 )
 
 func (p *Predicate) String() string {
 	return fmt.Sprintf("%s %s %v", p.Column, p.Type, p.Value)
+}
+
+func computeOperation(pred Predicate) (string, bool) {
+	switch pred.Type {
+	case PredicateEq:
+		return "equal", true
+	case PredicateNeq:
+		return "not_equal", true
+	case PredicateLt:
+		return "less", true
+	case PredicateLte:
+		return "less_equal", true
+	case PredicateGt:
+		return "greater", true
+	case PredicateGte:
+		return "greater_equal", true
+	}
+	return "", false
+}
+
+func applyPredicateCompute(arr arrow.Array, pred Predicate) (arrow.Array, error) {
+	op, ok := computeOperation(pred)
+	if !ok {
+		return nil, nil
+	}
+
+	predicateDatum := compute.NewDatum(pred.Value)
+	arrDatum := compute.NewDatum(arr)
+	resultDatum, err := compute.CallFunction(context.Background(), op, nil, arrDatum, predicateDatum)
+	arrDatum.Release()
+	predicateDatum.Release()
+	if err != nil {
+		return nil, err
+	}
+	defer resultDatum.Release()
+
+	boolDatum, ok := resultDatum.(*compute.ArrayDatum)
+	if !ok {
+		return nil, fmt.Errorf("invalid predicate result kind")
+	}
+
+	boolArr := boolDatum.MakeArray()
+	defer boolArr.Release()
+
+	filtered, err := compute.FilterArray(context.Background(), arr, boolArr, *compute.DefaultFilterOptions())
+	if err != nil {
+		return nil, err
+	}
+
+	return filtered, nil
 }
 
 func toStringPred(v interface{}) string {
@@ -32,6 +84,14 @@ func ApplyPredicate(arr arrow.Array, pred Predicate, mem memory.Allocator) (arro
 
 	if mem == nil {
 		mem = memory.DefaultAllocator
+	}
+
+	if filtered, err := applyPredicateCompute(arr, pred); err == nil {
+		if filtered != nil {
+			return filtered, nil
+		}
+	} else {
+		return nil, err
 	}
 
 	switch pred.Type {
